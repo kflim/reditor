@@ -3,3 +3,7 @@ Cargo.lock
 
 # All target files
 **/target
+
+# IDE
+.idea
+.vscode/
