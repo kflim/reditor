@@ -87,9 +87,9 @@ pub mod utility {
         ))
     }
 
-    static mut COUNTER: AtomicUsize = AtomicUsize::new(0);
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     pub fn get_next_id() -> usize {
-        unsafe { COUNTER.fetch_add(1, Ordering::Relaxed) }
+        COUNTER.fetch_add(1, Ordering::Relaxed)
     }
 }

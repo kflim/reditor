@@ -14,20 +14,19 @@ pub mod tab {
         Align2, Button, Color32, FontFamily, FontId, ImageButton, Key, RichText, ScrollArea,
         TextBuffer, Vec2, Widget, Window,
     };
-    use egui_dock::{TabIndex, TabViewer};
+    use egui_dock::TabViewer;
 
-    use crate::editor::editor::TEXT_EDITOR;
+    use crate::editor::editor::{CursorIndexManager, StateManager};
     use crate::{
         enums::enums::{FindBarState, GoToState, ReplaceBarState},
-        get_next_id,
-        utility::utility::{get_line_ending_format, get_next_word_idx},
+        utility::utility::{get_line_ending_format, get_next_id, get_next_word_idx},
     };
 
     pub struct TextEditorTab {
-        id: usize,
+        pub id: usize,
         file_path: String,
         title: String,
-        text: String,
+        pub text: String,
         pub status: String,
         language: String,
         dirty: bool,
@@ -55,38 +54,44 @@ pub mod tab {
                 error_msg: "".into(),
             }
         }
+
+        pub fn save(&mut self) {
+            if self.file_path.is_empty() {
+                let file = FileDialog::new()
+                    .add_filter("Text documents", &["txt"])
+                    .add_filter("Rust Source", &["rs"])
+                    .add_filter("Python Source", &["py"])
+                    .save_file();
+                if let Some(file) = file {
+                    self.file_path = file.as_path().to_str().unwrap().to_string();
+                    self.title = file.file_name().unwrap().to_str().unwrap().to_string();
+                    self.language = file.extension().unwrap().to_str().unwrap().to_string();
+                    fs::write(file, self.text.clone()).unwrap();
+                }
+            } else {
+                fs::write(self.file_path.clone(), self.text.clone()).unwrap();
+            }
+        }
     }
 
-    pub struct MyTabViewer;
+    pub struct MyTabViewer<'a> {
+        pub state_manager: &'a mut StateManager,
+        pub cursor_index_manager: &'a mut CursorIndexManager,
+        pub row_size: &'a mut f32,
+        pub pending_new_tab: &'a mut bool,
+        pub pending_close_tab: &'a mut Option<usize>,
+        pub pending_save_all: &'a mut bool,
+    }
 
-    impl TabViewer for MyTabViewer {
+    impl TabViewer for MyTabViewer<'_> {
         type Tab = TextEditorTab;
 
         fn on_add(&mut self, _surface: egui_dock::SurfaceIndex, _node: egui_dock::NodeIndex) {
-            let surface = unsafe {
-                TEXT_EDITOR
-                    .get_mut()
-                    .unwrap()
-                    .dock_state
-                    .get_surface_mut(_surface)
-                    .unwrap()
-            };
-            let node = surface
-                .node_tree_mut()
-                .and_then(|node| node.root_node_mut());
-            node.unwrap().append_tab(TextEditorTab::new(
-                "Untitled".into(),
-                "".into(),
-                format!("Ln 1 Col 1 | 100% | {} | UTF-8", get_line_ending_format()),
-            ));
+            *self.pending_new_tab = true;
         }
 
         fn closeable(&mut self, _tab: &mut Self::Tab) -> bool {
-            if _tab.title == "+" {
-                false
-            } else {
-                true
-            }
+            _tab.title != "+"
         }
 
         fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
@@ -96,46 +101,13 @@ pub mod tab {
         fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
             ui.horizontal(|ui| {
                 ui.menu_button("File", |ui| {
-                    // TODO : Add check for valid file path if file has previously existed
-                    let save_file = |tab: &mut Self::Tab| {
-                        if tab.file_path.clone().is_empty() {
-                            let file = FileDialog::new()
-                                .add_filter("Text documents", &["txt"])
-                                .add_filter("Rust Source", &["rs"])
-                                .add_filter("Python Source", &["py"])
-                                .save_file();
-                            if let Some(file) = file {
-                                tab.file_path = file.as_path().to_str().unwrap().to_string();
-                                tab.title = file.file_name().unwrap().to_str().unwrap().to_string();
-                                tab.language =
-                                    file.extension().unwrap().to_str().unwrap().to_string();
-                                fs::write(file.clone(), tab.text.clone()).unwrap();
-                            }
-                        } else {
-                            fs::write(tab.file_path.clone(), tab.text.clone()).unwrap();
-                        }
-                    };
-
                     if ui
                         .button("New Tab")
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .clicked()
                     {
                         ui.close_menu();
-                        let node = unsafe {
-                            TEXT_EDITOR
-                                .get_mut()
-                                .unwrap()
-                                .dock_state
-                                .main_surface_mut()
-                                .root_node_mut()
-                                .unwrap()
-                        };
-                        node.append_tab(TextEditorTab::new(
-                            "Untitled".into(),
-                            "".into(),
-                            format!("Ln 1 Col 1 | 100% | {} | UTF-8", get_line_ending_format()),
-                        ));
+                        *self.pending_new_tab = true;
                     }
                     if ui
                         .button("Open")
@@ -154,7 +126,8 @@ pub mod tab {
                                 get_line_ending_format(),
                                 encoding
                             );
-                            tab.language = file.extension().unwrap().to_str().unwrap().to_string();
+                            tab.language =
+                                file.extension().unwrap().to_str().unwrap().to_string();
                             tab.is_refreshed = true;
                         }
                     }
@@ -164,7 +137,7 @@ pub mod tab {
                         .clicked()
                     {
                         ui.close_menu();
-                        save_file(tab);
+                        tab.save();
                     }
                     if ui
                         .button("Save As")
@@ -179,8 +152,10 @@ pub mod tab {
                             .save_file();
                         if let Some(file) = file {
                             tab.file_path = file.as_path().to_str().unwrap().to_string();
-                            tab.title = file.file_name().unwrap().to_str().unwrap().to_string();
-                            tab.language = file.extension().unwrap().to_str().unwrap().to_string();
+                            tab.title =
+                                file.file_name().unwrap().to_str().unwrap().to_string();
+                            tab.language =
+                                file.extension().unwrap().to_str().unwrap().to_string();
                             fs::write(file.clone(), tab.text.clone()).unwrap();
                         }
                     }
@@ -190,20 +165,7 @@ pub mod tab {
                         .clicked()
                     {
                         ui.close_menu();
-                        let tabs = unsafe {
-                            TEXT_EDITOR
-                                .get_mut()
-                                .unwrap()
-                                .dock_state
-                                .main_surface_mut()
-                                .root_node_mut()
-                                .unwrap()
-                                .tabs_mut()
-                                .unwrap()
-                        };
-                        for tab in tabs {
-                            save_file(tab);
-                        }
+                        *self.pending_save_all = true;
                     }
                     if ui
                         .button("Close tab")
@@ -211,22 +173,7 @@ pub mod tab {
                         .clicked()
                     {
                         ui.close_menu();
-                        let node = unsafe {
-                            TEXT_EDITOR
-                                .get_mut()
-                                .unwrap()
-                                .dock_state
-                                .main_surface_mut()
-                                .root_node_mut()
-                                .unwrap()
-                        };
-                        let tab_index = node
-                            .tabs()
-                            .unwrap()
-                            .iter()
-                            .position(|t| t.id == tab.id)
-                            .unwrap();
-                        node.remove_tab(TabIndex(tab_index));
+                        *self.pending_close_tab = Some(tab.id);
                     }
                     if ui
                         .button("Close window")
@@ -247,20 +194,8 @@ pub mod tab {
                         .clicked()
                     {
                         ui.close_menu();
-                        let start_idx = unsafe {
-                            TEXT_EDITOR
-                                .get()
-                                .unwrap()
-                                .cursor_index_manager
-                                .get_start_idx()
-                        };
-                        let end_idx = unsafe {
-                            TEXT_EDITOR
-                                .get()
-                                .unwrap()
-                                .cursor_index_manager
-                                .get_end_idx()
-                        };
+                        let start_idx = self.cursor_index_manager.start_idx;
+                        let end_idx = self.cursor_index_manager.end_idx;
                         ui.ctx().copy_text(tab.text[start_idx..end_idx].to_string());
                         tab.text.delete_char_range(Range {
                             start: start_idx,
@@ -275,38 +210,13 @@ pub mod tab {
                     {
                         ui.close_menu();
                         let text = tab.text.clone();
-                        let find_str = unsafe {
-                            TEXT_EDITOR
-                                .get_mut()
-                                .unwrap()
-                                .state_manager
-                                .get_find_val()
-                                .clone()
-                        };
-                        let curr_start_idx = unsafe {
-                            TEXT_EDITOR
-                                .get_mut()
-                                .unwrap()
-                                .cursor_index_manager
-                                .get_start_idx()
-                        };
+                        let find_str = self.state_manager.find_val.clone();
+                        let curr_start_idx = self.cursor_index_manager.start_idx;
                         let prev_word_idx = text[0..curr_start_idx].rfind(&find_str);
                         if let Some(idx) = prev_word_idx {
-                            unsafe {
-                                TEXT_EDITOR
-                                    .get_mut()
-                                    .unwrap()
-                                    .cursor_index_manager
-                                    .set_start_idx(idx)
-                            };
+                            self.cursor_index_manager.start_idx = idx;
                         } else if let Some(idx) = text.rfind(&find_str) {
-                            unsafe {
-                                TEXT_EDITOR
-                                    .get_mut()
-                                    .unwrap()
-                                    .cursor_index_manager
-                                    .set_start_idx(idx)
-                            };
+                            self.cursor_index_manager.start_idx = idx;
                         }
                         tab.is_refreshed = true;
                     }
@@ -317,20 +227,8 @@ pub mod tab {
                         .clicked()
                     {
                         ui.close_menu();
-                        unsafe {
-                            TEXT_EDITOR
-                                .get_mut()
-                                .unwrap()
-                                .state_manager
-                                .set_is_goto_open(true)
-                        };
-                        unsafe {
-                            TEXT_EDITOR
-                                .get_mut()
-                                .unwrap()
-                                .state_manager
-                                .set_goto_state(GoToState::Focused)
-                        };
+                        self.state_manager.is_goto_open = true;
+                        self.state_manager.goto_state = GoToState::Focused;
                     }
 
                     if ui
@@ -339,22 +237,9 @@ pub mod tab {
                         .clicked()
                     {
                         ui.close_menu();
-                        let text = tab.text.clone();
-                        let len = text.len();
-                        unsafe {
-                            TEXT_EDITOR
-                                .get_mut()
-                                .unwrap()
-                                .cursor_index_manager
-                                .set_start_idx(0)
-                        };
-                        unsafe {
-                            TEXT_EDITOR
-                                .get_mut()
-                                .unwrap()
-                                .cursor_index_manager
-                                .set_end_idx(len)
-                        };
+                        let len = tab.text.len();
+                        self.cursor_index_manager.start_idx = 0;
+                        self.cursor_index_manager.end_idx = len;
                         tab.is_refreshed = true;
                     }
                 })
@@ -367,7 +252,6 @@ pub mod tab {
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .clicked()
                     {
-                        println!("Fullscreen toggled");
                     }
                 })
                 .response
@@ -375,6 +259,9 @@ pub mod tab {
             });
 
             let theme = egui_extras::syntax_highlighting::CodeTheme::from_memory(ui.ctx());
+
+            let row_height = *self.row_size;
+            let mut updated_row_size = row_height;
 
             let mut layouter = |ui: &egui::Ui, string: &str, wrap_width: f32| {
                 let mut layout_job = egui_extras::syntax_highlighting::highlight(
@@ -385,20 +272,17 @@ pub mod tab {
                 );
                 layout_job.wrap.max_width = wrap_width;
                 ui.fonts(|f| {
-                    unsafe { TEXT_EDITOR.get_mut().unwrap().row_size = layout_job.font_height(f) };
+                    updated_row_size = layout_job.font_height(f);
                     f.layout_job(layout_job)
                 })
             };
 
+            let mut is_find_open = self.state_manager.is_find_open;
             let _find_window = Window::new("")
-                .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 72.0)) // to change this magic value
+                .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 72.0))
                 .fixed_size(Vec2::new(ui.available_width() / 2.0, 16.0))
                 .title_bar(false)
-                .open(
-                    &mut unsafe { TEXT_EDITOR.get_mut().unwrap() }
-                        .state_manager
-                        .get_is_find_open(),
-                )
+                .open(&mut is_find_open)
                 .show(ui.ctx(), |ui| {
                     let ui_visuals = ui.visuals_mut();
                     ui_visuals.selection.stroke = egui::Stroke {
@@ -414,69 +298,29 @@ pub mod tab {
 
                     ui.horizontal(|ui| {
                         let find_bar_response = ui.add(
-                            egui::TextEdit::singleline(
-                                &mut unsafe { TEXT_EDITOR.get_mut().unwrap() }
-                                    .state_manager
-                                    .find_val,
-                            )
-                            .hint_text("Find")
-                            .desired_width(ui.available_width() - 32.0),
+                            egui::TextEdit::singleline(&mut self.state_manager.find_val)
+                                .hint_text("Find")
+                                .desired_width(ui.available_width() - 32.0),
                         );
-                        if let FindBarState::Focused =
-                            unsafe { &TEXT_EDITOR.get().unwrap().state_manager.get_find_state() }
-                        {
+                        if let FindBarState::Focused = self.state_manager.find_state {
                             find_bar_response.request_focus();
                         }
 
                         if find_bar_response.gained_focus() {
-                            unsafe {
-                                TEXT_EDITOR
-                                    .get_mut()
-                                    .unwrap()
-                                    .state_manager
-                                    .set_find_state(FindBarState::Focused)
-                            };
-                            unsafe {
-                                TEXT_EDITOR
-                                    .get_mut()
-                                    .unwrap()
-                                    .state_manager
-                                    .set_replace_state(ReplaceBarState::NotFocused)
-                            };
+                            self.state_manager.find_state = FindBarState::Focused;
+                            self.state_manager.replace_state = ReplaceBarState::NotFocused;
                             tab.is_finding = true;
                         } else if find_bar_response.clicked_elsewhere() {
                             find_bar_response.surrender_focus();
-                            unsafe {
-                                TEXT_EDITOR
-                                    .get_mut()
-                                    .unwrap()
-                                    .state_manager
-                                    .set_find_state(FindBarState::NotFocused)
-                            };
+                            self.state_manager.find_state = FindBarState::NotFocused;
                             tab.is_finding = false;
                         }
 
                         if ui.input(|i| i.key_pressed(Key::Enter)) {
                             if tab.is_finding && !tab.is_replacing {
-                                let find_state = unsafe {
-                                    TEXT_EDITOR
-                                        .get_mut()
-                                        .unwrap()
-                                        .state_manager
-                                        .get_find_state()
-                                };
-                                match find_state {
-                                    FindBarState::Focused => {
-                                        find_bar_response.surrender_focus();
-                                        unsafe {
-                                            TEXT_EDITOR
-                                                .get_mut()
-                                                .unwrap()
-                                                .state_manager
-                                                .set_find_state(FindBarState::Finding)
-                                        };
-                                    }
-                                    _ => {}
+                                if let FindBarState::Focused = self.state_manager.find_state {
+                                    find_bar_response.surrender_focus();
+                                    self.state_manager.find_state = FindBarState::Finding;
                                 }
                             }
                         }
@@ -518,47 +362,21 @@ pub mod tab {
                             .on_hover_cursor(egui::CursorIcon::PointingHand)
                             .clicked()
                         {
-                            unsafe {
-                                TEXT_EDITOR
-                                    .get_mut()
-                                    .unwrap()
-                                    .state_manager
-                                    .set_is_find_open(false)
-                            };
-                            unsafe {
-                                TEXT_EDITOR
-                                    .get_mut()
-                                    .unwrap()
-                                    .state_manager
-                                    .set_find_val("".into())
-                            };
-                            unsafe {
-                                TEXT_EDITOR
-                                    .get_mut()
-                                    .unwrap()
-                                    .state_manager
-                                    .set_is_replace_open(false)
-                            };
-                            unsafe {
-                                TEXT_EDITOR
-                                    .get_mut()
-                                    .unwrap()
-                                    .state_manager
-                                    .set_replace_val("".into())
-                            };
+                            self.state_manager.is_find_open = false;
+                            self.state_manager.find_val = "".into();
+                            self.state_manager.is_replace_open = false;
+                            self.state_manager.replace_val = "".into();
                         }
                     });
                 });
+            self.state_manager.is_find_open = is_find_open;
 
+            let mut is_replace_open = self.state_manager.is_replace_open;
             let _replace_window = Window::new(" ")
-                .anchor(Align2::CENTER_TOP, Vec2::new(35.0, 108.0)) // to change this magic value
+                .anchor(Align2::CENTER_TOP, Vec2::new(35.0, 108.0))
                 .fixed_size(Vec2::new(ui.available_width() / 2.0, 16.0))
                 .title_bar(false)
-                .open(
-                    &mut unsafe { TEXT_EDITOR.get_mut().unwrap() }
-                        .state_manager
-                        .get_is_replace_open(),
-                )
+                .open(&mut is_replace_open)
                 .show(ui.ctx(), |ui| {
                     let ui_visuals = ui.visuals_mut();
                     ui_visuals.selection.stroke = egui::Stroke {
@@ -574,68 +392,28 @@ pub mod tab {
 
                     ui.horizontal(|ui| {
                         let replace_bar_response = ui.add(
-                            egui::TextEdit::singleline(
-                                &mut unsafe { TEXT_EDITOR.get_mut().unwrap() }
-                                    .state_manager
-                                    .replace_val,
-                            )
-                            .hint_text("Replace")
-                            .desired_width(ui.available_width()),
+                            egui::TextEdit::singleline(&mut self.state_manager.replace_val)
+                                .hint_text("Replace")
+                                .desired_width(ui.available_width()),
                         );
-                        if let ReplaceBarState::Focused =
-                            unsafe { &TEXT_EDITOR.get().unwrap().state_manager.get_replace_state() }
-                        {
+                        if let ReplaceBarState::Focused = self.state_manager.replace_state {
                             replace_bar_response.request_focus();
                         }
                         if replace_bar_response.gained_focus() {
-                            unsafe {
-                                TEXT_EDITOR
-                                    .get_mut()
-                                    .unwrap()
-                                    .state_manager
-                                    .set_find_state(FindBarState::NotFocused)
-                            };
-                            unsafe {
-                                TEXT_EDITOR
-                                    .get_mut()
-                                    .unwrap()
-                                    .state_manager
-                                    .set_replace_state(ReplaceBarState::Focused)
-                            };
+                            self.state_manager.find_state = FindBarState::NotFocused;
+                            self.state_manager.replace_state = ReplaceBarState::Focused;
                             tab.is_replacing = true;
                         } else if replace_bar_response.clicked_elsewhere() {
                             replace_bar_response.surrender_focus();
-                            unsafe {
-                                TEXT_EDITOR
-                                    .get_mut()
-                                    .unwrap()
-                                    .state_manager
-                                    .set_replace_state(ReplaceBarState::NotFocused)
-                            };
+                            self.state_manager.replace_state = ReplaceBarState::NotFocused;
                             tab.is_replacing = false;
                         }
 
                         if ui.input(|i| i.key_pressed(Key::Enter)) {
-                            let replace_state = unsafe {
-                                TEXT_EDITOR
-                                    .get_mut()
-                                    .unwrap()
-                                    .state_manager
-                                    .get_replace_state()
-                            };
-
                             if tab.is_replacing {
-                                match replace_state {
-                                    ReplaceBarState::Focused => {
-                                        unsafe {
-                                            TEXT_EDITOR
-                                                .get_mut()
-                                                .unwrap()
-                                                .state_manager
-                                                .set_replace_state(ReplaceBarState::Replacing)
-                                        };
-                                    }
-                                    _ => {}
+                                if let ReplaceBarState::Focused = self.state_manager.replace_state
+                                {
+                                    self.state_manager.replace_state = ReplaceBarState::Replacing;
                                 }
                             }
                         }
@@ -644,37 +422,13 @@ pub mod tab {
                             .add(Button::new("Replace All"))
                             .on_hover_cursor(egui::CursorIcon::PointingHand);
                         if replace_all_button.clicked() {
-                            let find_str = unsafe {
-                                TEXT_EDITOR
-                                    .get_mut()
-                                    .unwrap()
-                                    .state_manager
-                                    .get_find_val()
-                                    .clone()
-                            };
-                            let replace_str = unsafe {
-                                TEXT_EDITOR
-                                    .get_mut()
-                                    .unwrap()
-                                    .state_manager
-                                    .get_replace_val()
-                                    .clone()
-                            };
-                            let text = tab.text.clone();
-                            let new_text = text.replace(&find_str, &replace_str);
-                            tab.text = new_text;
+                            let find_str = self.state_manager.find_val.clone();
+                            let replace_str = self.state_manager.replace_val.clone();
+                            tab.text = tab.text.replace(&find_str, &replace_str);
                         }
                     });
                 });
-
-            /* let goto_window = Window::new("")
-            .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 96.0)) // to change this magic value
-            .fixed_size(Vec2::new(ui.available_width() / 2.0, 16.0))
-            .title_bar(false)
-            .open(&mut unsafe { TEXT_EDITOR.get_mut().unwrap() }.state_manager.get_is_goto_open())
-            .show(ui.ctx(), |ui| {
-
-            }); */
+            self.state_manager.is_replace_open = is_replace_open;
 
             ScrollArea::both().show(ui, |ui| {
                 let ui_visuals = ui.visuals_mut();
@@ -700,90 +454,46 @@ pub mod tab {
                     text.response.request_focus();
                 }
 
-                let mut crange;
-                if let Some(r) = text.cursor_range {
-                    crange = Some(r);
-                } else {
-                    crange = None;
-                }
+                let mut crange = text.cursor_range;
 
-                let find_bar_state = unsafe {
-                    &TEXT_EDITOR
-                        .get_mut()
-                        .unwrap()
-                        .state_manager
-                        .get_find_state()
-                };
-
-                match find_bar_state {
+                match self.state_manager.find_state.clone() {
                     FindBarState::Finding => {
                         text.response.request_focus();
                         if crange.is_some() {
-                            let curr_start_idx = unsafe {
-                                TEXT_EDITOR
-                                    .get()
-                                    .unwrap()
-                                    .cursor_index_manager
-                                    .get_start_idx()
-                            };
+                            let curr_start_idx = self.cursor_index_manager.start_idx;
                             let text_str = tab.text.clone();
-                            let find_str = unsafe {
-                                TEXT_EDITOR
-                                    .get()
-                                    .unwrap()
-                                    .state_manager
-                                    .get_find_val()
-                                    .clone()
-                            };
+                            let find_str = self.state_manager.find_val.clone();
                             let find_result = get_next_word_idx(
                                 &text_str,
-                                unsafe {
-                                    TEXT_EDITOR
-                                        .get()
-                                        .unwrap()
-                                        .state_manager
-                                        .get_find_val()
-                                        .clone()
-                                },
+                                find_str.clone(),
                                 curr_start_idx,
                                 ui.available_width() as usize,
                             );
-                            if find_result.is_some() {
-                                let next_word_idx = find_result.unwrap();
+                            if let Some(next_word_idx) = find_result {
                                 let mut new_range =
                                     CursorRange::one(text.cursor_range.clone().unwrap().primary);
-                                new_range.primary.ccursor.index = next_word_idx.0 + find_str.len();
+                                new_range.primary.ccursor.index =
+                                    next_word_idx.0 + find_str.len();
                                 new_range.primary.rcursor.row = next_word_idx.1;
-                                new_range.primary.rcursor.column = next_word_idx.2 + find_str.len();
+                                new_range.primary.rcursor.column =
+                                    next_word_idx.2 + find_str.len();
                                 new_range.primary.pcursor.paragraph = next_word_idx.3;
-                                new_range.primary.pcursor.offset = next_word_idx.4 + find_str.len();
+                                new_range.primary.pcursor.offset =
+                                    next_word_idx.4 + find_str.len();
                                 new_range.secondary.ccursor.index = next_word_idx.0;
                                 new_range.secondary.rcursor.row = next_word_idx.1;
                                 new_range.secondary.rcursor.column = next_word_idx.2;
                                 new_range.secondary.pcursor.paragraph = next_word_idx.3;
                                 new_range.secondary.pcursor.offset = next_word_idx.4;
-                                let mut crange = text.cursor_range.unwrap();
-                                crange.primary = new_range.primary;
-                                crange.secondary = new_range.secondary;
-                                text.cursor_range = Some(crange);
-                                text.state.cursor.set_range(Some(crange));
+                                let mut cr = text.cursor_range.unwrap();
+                                cr.primary = new_range.primary;
+                                cr.secondary = new_range.secondary;
+                                text.cursor_range = Some(cr);
+                                text.state.cursor.set_range(Some(cr));
                                 text.state.store(ui.ctx(), text.response.id);
-                                unsafe {
-                                    TEXT_EDITOR
-                                        .get_mut()
-                                        .unwrap()
-                                        .cursor_index_manager
-                                        .set_start_idx(next_word_idx.0)
-                                };
-                                unsafe {
-                                    TEXT_EDITOR
-                                        .get_mut()
-                                        .unwrap()
-                                        .cursor_index_manager
-                                        .set_end_idx(next_word_idx.0 + find_str.len())
-                                };
-                                let row_height = unsafe { TEXT_EDITOR.get().unwrap().row_size };
-
+                                self.cursor_index_manager.start_idx = next_word_idx.0;
+                                self.cursor_index_manager.end_idx =
+                                    next_word_idx.0 + find_str.len();
                                 let crect = cursor_rect(
                                     text.galley_pos,
                                     &text.galley,
@@ -791,7 +501,6 @@ pub mod tab {
                                     row_height,
                                 );
                                 ui.scroll_to_rect(crect, None);
-
                                 paint_text_selection(
                                     ui.painter(),
                                     ui.visuals(),
@@ -802,121 +511,56 @@ pub mod tab {
                                 );
                             } else {
                                 tab.has_error = true;
-                                tab.error_msg = format!("Cannot find \"{}\"", find_str).into();
+                                tab.error_msg = format!("Cannot find \"{}\"", find_str);
                             }
                         }
                     }
                     FindBarState::NotFocused => {
-                        if !unsafe {
-                            TEXT_EDITOR
-                                .get()
-                                .unwrap()
-                                .state_manager
-                                .get_is_replace_open()
-                        } {
+                        if !self.state_manager.is_replace_open {
                             text.response.request_focus();
-                            if crange.is_some() {
-                                let primary_idx = crange.unwrap().primary.ccursor.index;
-                                let secondary_idx = crange.unwrap().secondary.ccursor.index;
+                            if let Some(cr) = crange {
+                                let primary_idx = cr.primary.ccursor.index;
+                                let secondary_idx = cr.secondary.ccursor.index;
                                 if primary_idx != secondary_idx {
-                                    unsafe {
-                                        TEXT_EDITOR
-                                            .get_mut()
-                                            .unwrap()
-                                            .cursor_index_manager
-                                            .set_start_idx(min(primary_idx, secondary_idx))
-                                    };
-                                    unsafe {
-                                        TEXT_EDITOR
-                                            .get_mut()
-                                            .unwrap()
-                                            .cursor_index_manager
-                                            .set_end_idx(max(primary_idx, secondary_idx))
-                                    };
+                                    self.cursor_index_manager.start_idx =
+                                        min(primary_idx, secondary_idx);
+                                    self.cursor_index_manager.end_idx =
+                                        max(primary_idx, secondary_idx);
                                 }
                             }
                         } else {
-                            let replace_bar_state = unsafe {
-                                &TEXT_EDITOR
-                                    .get_mut()
-                                    .unwrap()
-                                    .state_manager
-                                    .get_replace_state()
-                            };
-
-                            match replace_bar_state {
+                            match self.state_manager.replace_state.clone() {
                                 ReplaceBarState::Replacing => {
                                     text.response.request_focus();
-                                    if let Some(r) = text.cursor_range {
-                                        crange = Some(r);
-                                    } else {
-                                        crange = None;
-                                    }
+                                    crange = text.cursor_range;
                                     if crange.is_some() {
-                                        let curr_start_idx = unsafe {
-                                            TEXT_EDITOR
-                                                .get()
-                                                .unwrap()
-                                                .cursor_index_manager
-                                                .get_start_idx()
-                                        };
+                                        let curr_start_idx =
+                                            self.cursor_index_manager.start_idx;
                                         if curr_start_idx == 0 {
-                                            unsafe {
-                                                TEXT_EDITOR
-                                                    .get_mut()
-                                                    .unwrap()
-                                                    .state_manager
-                                                    .set_is_replace_active(true)
-                                            };
+                                            self.state_manager.is_replace_active = true;
                                         }
-                                        if !unsafe {
-                                            TEXT_EDITOR
-                                                .get()
-                                                .unwrap()
-                                                .state_manager
-                                                .get_is_replace_active()
-                                        } {
+                                        if !self.state_manager.is_replace_active {
                                             return;
                                         }
-                                        let find_str = unsafe {
-                                            TEXT_EDITOR
-                                                .get()
-                                                .unwrap()
-                                                .state_manager
-                                                .get_find_val()
-                                                .clone()
-                                        };
-                                        let replace_str = unsafe {
-                                            TEXT_EDITOR
-                                                .get()
-                                                .unwrap()
-                                                .state_manager
-                                                .get_replace_val()
-                                                .clone()
-                                        };
+                                        let find_str = self.state_manager.find_val.clone();
+                                        let replace_str =
+                                            self.state_manager.replace_val.clone();
                                         if curr_start_idx > 0 {
                                             let before = tab.text
                                                 [0..curr_start_idx - 1 - find_str.len()]
                                                 .to_string();
-                                            let after = tab.text[curr_start_idx - 1..].to_string();
+                                            let after =
+                                                tab.text[curr_start_idx - 1..].to_string();
                                             tab.text = before + &replace_str + &after;
                                         }
                                         let text_str = tab.text.clone();
                                         let find_result = get_next_word_idx(
                                             &text_str,
-                                            unsafe {
-                                                TEXT_EDITOR
-                                                    .get()
-                                                    .unwrap()
-                                                    .state_manager
-                                                    .get_find_val()
-                                                    .clone()
-                                            },
+                                            find_str.clone(),
                                             curr_start_idx,
                                             ui.available_width() as usize,
                                         );
-                                        if find_result.is_some() {
-                                            let next_word_idx = find_result.unwrap();
+                                        if let Some(next_word_idx) = find_result {
                                             let mut new_range = CursorRange::one(
                                                 text.cursor_range.clone().unwrap().primary,
                                             );
@@ -925,37 +569,25 @@ pub mod tab {
                                             new_range.primary.rcursor.row = next_word_idx.1;
                                             new_range.primary.rcursor.column =
                                                 next_word_idx.2 + find_str.len();
-                                            new_range.primary.pcursor.paragraph = next_word_idx.3;
+                                            new_range.primary.pcursor.paragraph =
+                                                next_word_idx.3;
                                             new_range.primary.pcursor.offset =
                                                 next_word_idx.4 + find_str.len();
                                             new_range.secondary.ccursor.index = next_word_idx.0;
                                             new_range.secondary.rcursor.row = next_word_idx.1;
                                             new_range.secondary.rcursor.column = next_word_idx.2;
-                                            new_range.secondary.pcursor.paragraph = next_word_idx.3;
+                                            new_range.secondary.pcursor.paragraph =
+                                                next_word_idx.3;
                                             new_range.secondary.pcursor.offset = next_word_idx.4;
-                                            let mut crange = text.cursor_range.unwrap();
-                                            crange.primary = new_range.primary;
-                                            crange.secondary = new_range.secondary;
-                                            text.cursor_range = Some(crange);
-                                            text.state.cursor.set_range(Some(crange));
+                                            let mut cr = text.cursor_range.unwrap();
+                                            cr.primary = new_range.primary;
+                                            cr.secondary = new_range.secondary;
+                                            text.cursor_range = Some(cr);
+                                            text.state.cursor.set_range(Some(cr));
                                             text.state.store(ui.ctx(), text.response.id);
-                                            unsafe {
-                                                TEXT_EDITOR
-                                                    .get_mut()
-                                                    .unwrap()
-                                                    .cursor_index_manager
-                                                    .set_start_idx(next_word_idx.0)
-                                            };
-                                            unsafe {
-                                                TEXT_EDITOR
-                                                    .get_mut()
-                                                    .unwrap()
-                                                    .cursor_index_manager
-                                                    .set_end_idx(next_word_idx.0 + find_str.len())
-                                            };
-                                            let row_height =
-                                                unsafe { TEXT_EDITOR.get().unwrap().row_size };
-
+                                            self.cursor_index_manager.start_idx = next_word_idx.0;
+                                            self.cursor_index_manager.end_idx =
+                                                next_word_idx.0 + find_str.len();
                                             let crect = cursor_rect(
                                                 text.galley_pos,
                                                 &text.galley,
@@ -963,7 +595,6 @@ pub mod tab {
                                                 row_height,
                                             );
                                             ui.scroll_to_rect(crect, None);
-
                                             paint_text_selection(
                                                 ui.painter(),
                                                 ui.visuals(),
@@ -975,37 +606,21 @@ pub mod tab {
                                         } else {
                                             tab.has_error = true;
                                             tab.error_msg =
-                                                format!("Cannot find \"{}\"", find_str).into();
+                                                format!("Cannot find \"{}\"", find_str);
                                         }
-                                        unsafe {
-                                            TEXT_EDITOR
-                                                .get_mut()
-                                                .unwrap()
-                                                .state_manager
-                                                .set_is_replace_active(false)
-                                        };
+                                        self.state_manager.is_replace_active = false;
                                     }
                                 }
                                 ReplaceBarState::NotFocused => {
                                     text.response.request_focus();
-                                    if crange.is_some() {
-                                        let primary_idx = crange.unwrap().primary.ccursor.index;
-                                        let secondary_idx = crange.unwrap().secondary.ccursor.index;
+                                    if let Some(cr) = crange {
+                                        let primary_idx = cr.primary.ccursor.index;
+                                        let secondary_idx = cr.secondary.ccursor.index;
                                         if primary_idx != secondary_idx {
-                                            unsafe {
-                                                TEXT_EDITOR
-                                                    .get_mut()
-                                                    .unwrap()
-                                                    .cursor_index_manager
-                                                    .set_start_idx(min(primary_idx, secondary_idx))
-                                            };
-                                            unsafe {
-                                                TEXT_EDITOR
-                                                    .get_mut()
-                                                    .unwrap()
-                                                    .cursor_index_manager
-                                                    .set_end_idx(max(primary_idx, secondary_idx))
-                                            };
+                                            self.cursor_index_manager.start_idx =
+                                                min(primary_idx, secondary_idx);
+                                            self.cursor_index_manager.end_idx =
+                                                max(primary_idx, secondary_idx);
                                         }
                                     }
                                 }
@@ -1021,13 +636,14 @@ pub mod tab {
                 }
             });
 
+            *self.row_size = updated_row_size;
+
             if tab.has_error {
-                let text_color;
-                if theme == CodeTheme::dark() {
-                    text_color = Color32::WHITE;
+                let text_color = if theme == CodeTheme::dark() {
+                    Color32::WHITE
                 } else {
-                    text_color = Color32::BLACK;
-                }
+                    Color32::BLACK
+                };
                 let _error_window = Window::new(RichText::new("Reditor").color(text_color))
                     .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                     .collapsible(false)
@@ -1036,12 +652,14 @@ pub mod tab {
                     .min_height(150.0)
                     .show(ui.ctx(), |ui| {
                         ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                            ui.label(RichText::new(tab.error_msg.clone()).color(text_color).font(
-                                FontId {
-                                    size: 14.0,
-                                    family: FontFamily::Proportional,
-                                },
-                            ));
+                            ui.label(
+                                RichText::new(tab.error_msg.clone()).color(text_color).font(
+                                    FontId {
+                                        size: 14.0,
+                                        family: FontFamily::Proportional,
+                                    },
+                                ),
+                            );
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                             ui.style_mut().spacing.button_padding = Vec2::new(8.0, 8.0);
